@@ -1,0 +1,107 @@
+# Azimuth Scribe 빌드 메모 (Windows / PowerShell)
+
+프로젝트 폴더 예: `C:\Users\justd\Desktop\Azimuth_Scribe_Dev`
+
+## 1. 가상환경 만들기 (처음 한 번)
+
+```
+cd C:\Users\justd\Desktop\Azimuth_Scribe_Dev
+python -m venv .venv_build
+.\.venv_build\Scripts\Activate.ps1
+```
+
+- 프롬프트 앞에 `(.venv_build)`가 보이면 활성화된 것.
+- "스크립트 실행 불가" 오류 → 이 창에서만 허용: `Set-ExecutionPolicy -Scope Process RemoteSigned`
+- cmd 사용 시: `.venv_build\Scripts\activate.bat`
+- 나가기: `deactivate`
+
+## 2. 패키지 설치
+
+```
+pip install PySide6 faster-whisper sounddevice numpy scipy requests pyinstaller
+pip install "av==18.1.0"
+```
+
+**중요: `av`는 반드시 19 미만으로 고정.**
+- PyAV 19(2026-09-29 출시)에서 faster-whisper 1.2.1이 쓰는 인자가 사라져 STT가 다음 오류로 실패함:
+  `open() got an unexpected keyword argument 'metadata_errors'`
+- faster-whisper가 PyAV 19를 지원하는 새 버전을 내면 그때 제한을 풂. (업그레이드 후엔 반드시 STT 시험)
+- 정상 동작 확인된 조합: `av 18.1.0`, `faster-whisper 1.2.1`, `ctranslate2 4.8.x`
+
+정상 동작을 확인한 뒤 버전을 기록해 두기:
+
+```
+pip freeze > requirements.txt
+```
+
+다음에 같은 환경을 만들 때:
+
+```
+python -m venv .venv_build
+.\.venv_build\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install pyinstaller
+```
+
+(`requirements.txt`에 `av==18.1.0` 줄이 있는지 확인)
+
+## 3. 빌드 전 확인
+
+```
+pip list | findstr /i "av faster ctranslate2"
+python main.py
+```
+
+- 개발 실행(`python main.py`)에서 녹음 / STT / 요약이 되는지 먼저 확인.
+
+## 4. 빌드
+
+이전 빌드 결과 지우기:
+
+```
+Remove-Item -Recurse -Force build, dist, AzimuthScribe.spec
+```
+
+배포용 빌드 (한 줄로 입력):
+
+```
+pyinstaller --noconsole --name AzimuthScribe --icon "Azimuth_logo.png" --add-data "Azimuth_logo.png;." --add-data "settings_24dp.png;." --collect-all faster_whisper --collect-all ctranslate2 --collect-all av main.py
+```
+
+- `-F`(onefile)는 쓰지 않음 → 기본 onedir. (Qt가 LGPL이라 DLL을 별도 파일로 둬야 하고, 시작도 빠르고 백신 오탐도 적음)
+- 결과: `dist\AzimuthScribe\AzimuthScribe.exe` (옆의 `_internal` 폴더와 함께 배포해야 함)
+- 디버깅할 때는 `--noconsole`을 빼고 빌드하면 콘솔에 로그/오류가 보임.
+- `--icon`에는 파일 경로만 쓴다. (`;.`는 `--add-data` 전용) PNG가 오류면 `pip install pillow` 하거나 `.ico`로 변환.
+- 줄바꿈 이음: PowerShell은 백틱 `` ` ``, cmd는 `^` (헷갈리면 한 줄로)
+
+## 5. 배포 전 테스트 체크리스트
+
+깨끗한 PC 또는 가상 머신(파이썬 미설치)에서:
+
+- [ ] 앱 실행, 하단에 "STT model ready" 표시
+- [ ] 최초 실행 시 Whisper 모델 다운로드 (`--noconsole` 빌드에서도 되는지)
+  - 안 되면 `main.py` 맨 위에 stdout/stderr가 None일 때 `os.devnull`로 대체하는 코드 추가
+- [ ] 녹음 → 파일 목록에 추가
+- [ ] STT 결과 표시
+- [ ] 요약 (Ollama 실행 상태 / 미실행 상태 모두)
+- [ ] 설정 저장/로딩, 라이선스 창
+- [ ] 폴더 전체(`dist\AzimuthScribe`) 용량 확인 (exe 단독 약 14MB)
+
+## 6. 배포 메모
+
+- `dist\AzimuthScribe` 폴더 전체를 zip으로 묶거나 Inno Setup으로 설치 파일 제작.
+- 함께 넣을 것: `LICENSE`/EULA, 제3자 라이선스 전문(`THIRD_PARTY_LICENSES`), 매뉴얼 PDF, SHA256 체크섬.
+- 서명 없는 exe는 SmartScreen 경고가 뜸 → README에 안내하거나 코드 서명 검토.
+- 모델(Whisper, Qwen)은 앱에 넣지 않음. Whisper는 첫 실행 때 자동 다운로드, Ollama와 Qwen은 사용자가 설치.
+- 소스 비공개 시: onedir 유지(Qt LGPL), 네트워크 사용 내역(Ollama 로컬 통신, 최초 모델 다운로드)을 문서로 공개.
+
+## 7. 문제 해결 요약
+
+| 증상 | 원인 / 조치 |
+|---|---|
+| STT가 Error, 이유를 모름 | 상태 표시줄이 "STT completed."로 덮어씀 → 오류 창으로 표시하도록 `onSttError` 수정 / 콘솔 빌드로 확인 |
+| `metadata_errors` TypeError | `pip install "av==18.1.0"` (PyAV 19 호환 문제) |
+| 빌드 용량이 너무 큼 | 깨끗한 venv에서 빌드, 불필요한 모듈은 `--exclude-module` |
+| `--collect-all` 없이 빌드 후 STT 오류 | faster_whisper / ctranslate2 / av에 `--collect-all` 추가 |
+| `--noconsole`에서만 오류 | stdout/stderr가 None → `os.devnull`로 대체 |
+| PowerShell에서 `--collect-all` 구문 오류 | 줄 이음에 `^` 사용함 → 한 줄 또는 백틱 사용 |
